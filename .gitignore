@@ -1,0 +1,17 @@
+data/
+data/*
+model_components/pyannote/*.bin
+model_components/*.onnx
+model_components/tokens.txt
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+*.db
+*.log
+*.pot
+*.wav
+*.mp3
+*.m4a
+*.flac
