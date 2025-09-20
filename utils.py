@@ -37,7 +37,7 @@ def dump_transcription_results(results, output_dir="."):
     filepath = os.path.join(output_dir, filename)
     with open(filepath, "w", encoding="utf-8") as f:
         for start, end, speaker, text in results:
-            f.write(f"[{start:.3f} - {end:.3f}] {speaker}: {text}\n")
+            f.write(f"[{start} - {end}] {speaker}: {text}\n")
     print(f"Transcription results saved to {filepath}")
     return filepath
 
@@ -55,7 +55,7 @@ def group_and_write_speakers(global_results, output_file, ignore_timestamps=True
         if ignore_timestamps:
             speaker_texts[speaker].append(text)
         else:
-            speaker_texts[speaker].append(f"[{start:.3f} - {end:.3f}] {text}")
+            speaker_texts[speaker].append(f"[{start} - {end}] {text}")
 
     with open(output_file, "w", encoding="utf-8") as f:
         for speaker, texts in speaker_texts.items():

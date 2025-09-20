@@ -1,0 +1,12 @@
+torch
+numpy
+librosa
+soundfile
+onnxruntime
+kaldi-native-fbank
+scikit-learn
+scipy
+pyannote.audio
+pyannote.core
+silero-vad==6.0.0
+gradio

@@ -33,7 +33,7 @@ EMBEDING_INFERENCE = None
 
 print("Check if GPU is available for transcription:", torch.cuda.is_available())
 
-AUDIO_FILE = "data/meeting_file.mp3"
+AUDIO_FILE = "output.wav"  # Change this to your input file path
 ENCODER = "model_components/encoder.int8.onnx"
 DECODER = "model_components/decoder.int8.onnx"
 JOINER = "model_components/joiner.int8.onnx"
@@ -146,7 +146,26 @@ def transcribe_segment(segment_file):
         print(f"Error transcribing {segment_file}: {e}")
         return ""
 
-def process_chunk(chunk_idx, audio_file=AUDIO_FILE, chunk_duration=CHUNK_DURATION):
+
+def format_seconds(seconds: float) -> str:
+    # Convert to integer and fractional seconds
+    total_seconds = int(seconds)
+    frac = seconds - total_seconds
+
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+
+    # Add fractional part back to seconds
+    secs = secs + frac
+
+    # Build formatted string
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:05.2f}"
+    else:
+        return f"{minutes}:{secs:05.2f}"
+
+
+def process_chunk(chunk_idx, audio_file, chunk_duration, num_speakers):
     """
     This function will be run by a worker process. It automatically
     uses the global PIPELINE, EMBEDDING_MODEL, and AUDIO variables that were initialized for it.
@@ -158,7 +177,7 @@ def process_chunk(chunk_idx, audio_file=AUDIO_FILE, chunk_duration=CHUNK_DURATIO
     print(f"Splitting chunk {chunk_idx}: {start_time:.3f}s to {end_time:.3f}s")
     if not split_audio_ffmpeg(audio_file, start_time, end_time, chunk_file):
         return []
-    segments = diarize_pyannote(chunk_file, NUM_SPEAKERS)
+    segments = diarize_pyannote(chunk_file, num_speakers)
     merged_segments = merge_same_speaker_segments(segments)
     results = []
     for idx, (start, end, speaker) in enumerate(merged_segments):
@@ -186,6 +205,7 @@ def process_chunk(chunk_idx, audio_file=AUDIO_FILE, chunk_duration=CHUNK_DURATIO
         print(f"Error removing {chunk_file}: {e}")
     return results
 
+
 def assign_global_speakers(all_results):
     """
     Assign global speaker labels using agglomerative clustering on embeddings,
@@ -197,7 +217,7 @@ def assign_global_speakers(all_results):
     
     # Filter valid embeddings
     valid_results = [(start, end, local_speaker, text, emb) for start, end, local_speaker, text, emb in all_results 
-                     if emb is not None and not np.all(emb == 0)]
+                     if emb is not None and not np.all(emb == 0) and not np.isnan(emb).any()]
     
     if not valid_results:
         print("No valid embeddings found for clustering.")
@@ -223,6 +243,11 @@ def assign_global_speakers(all_results):
         labels = clustering.fit_predict(embeddings)
         if len(np.unique(labels)) < 2:
             continue  # Skip if not enough clusters
+        if len(embeddings) == 2 and len(labels) == 2:
+            print("There are only two segments; and each of them belongs to a different speaker. skipping silhouette score calculation.")
+            best_n = 2
+            best_labels = labels
+            break
         score = silhouette_score(embeddings, labels, metric='cosine')
         print(f"  - n_clusters={n}: silhouette_score={score:.4f}")
         if score > best_score:
@@ -240,7 +265,7 @@ def assign_global_speakers(all_results):
     # Assign global speakers and collect mappings
     global_results = []
     speaker_embeddings = {}
-    
+
     print("\nLocal to Global Speaker Mappings:")
     for i, (start, end, local_speaker, text, emb) in enumerate(valid_results):
         global_id = best_labels[i]
@@ -256,6 +281,7 @@ def assign_global_speakers(all_results):
     global_results.sort(key=lambda x: x[0])
     
     return global_results, speaker_embeddings
+
 
 def merge_global_segments(global_results):
     """
@@ -279,23 +305,30 @@ def merge_global_segments(global_results):
     merged.append((current_start, current_end, current_speaker, current_text))
     return merged
 
-def main():
+
+def process_chunk_wrapper(args):
+    return process_chunk(*args)
+
+
+def transcript_file_with_diarization(audio_file, chunk_duration, tentative_speakers):
     # Convert to wav if not already wav
-    global AUDIO_FILE
-    if not AUDIO_FILE.lower().endswith(".wav"):
-        print(f"Converting {AUDIO_FILE} to WAV...")
-        AUDIO_FILE = convert_to_wav(AUDIO_FILE)
-    total_duration = get_audio_duration(AUDIO_FILE)
+    
+    if not audio_file.lower().endswith(".wav"):
+        print(f"Converting {audio_file} to WAV...")
+        audio_file = convert_to_wav(audio_file)
+    total_duration = get_audio_duration(audio_file)
     start_time = time.time()
     if total_duration == 0.0:
-        print("Failed to get audio duration. Check if AUDIO_FILE exists and is valid.")
+        print("Failed to get audio duration. Check if audio_file exists and is valid.")
         return
     print(f"Total duration: {total_duration:.3f}s")
-    num_chunks = math.ceil(total_duration / CHUNK_DURATION)
+    num_chunks = math.ceil(total_duration / chunk_duration)
     print(f"Total duration: {total_duration:.3f}s, splitting into {num_chunks} chunks")
     # Use the initializer to set up the pipeline and embedding in each worker
+
+    args = [ (ch, audio_file, chunk_duration, tentative_speakers) for ch in range(num_chunks)]
     with Pool(processes=cpu_count() // 4, initializer=init_worker) as pool:
-        chunk_results = pool.map(process_chunk, range(num_chunks))
+        chunk_results = pool.map(process_chunk_wrapper, args)
     end_time = time.time()
     print(f"Processing completed in {end_time - start_time:.2f} seconds")
     all_results = []
@@ -303,6 +336,9 @@ def main():
         all_results.extend(results)
     all_results.sort(key=lambda x: x[0])
     # Global speaker assignment with clustering
+    # format all the timestamps to H:MM:SS.sss
+
+    display_text = ""
     if all_results:
         global_results, speaker_embeddings = assign_global_speakers(all_results)
         # Merge consecutive global segments
@@ -314,15 +350,23 @@ def main():
         #     speaker_label = f"SPEAKER_{speaker_id:02d}"
         #     np.save(os.path.join("speaker_embeddings", f"{speaker_label}_embedding.npy"), avg_emb)
         print("\n=== Combined Transcription (Global Speakers, Merged) ===")
+        # format all the timestamps to H:MM:SS.sss
+        merged_results = [ (format_seconds(s), format_seconds(e), sp, te) for s, e, sp, te  in merged_results]
         for start, end, speaker, text in merged_results:
-            print(f"[{start:.3f} - {end:.3f}] {speaker}: {text}")
+            line = f"[{start} - {end}] {speaker}: {text}"
+            print(line)
+            display_text += line + "\n"
         # Dump results to file
         # dump_transcription_results(merged_results)
         now = datetime.now().strftime("%Y_%m_%d__%H_%M_%S")
         filename = f"transcription_results_{now}.txt"
         group_and_write_speakers(merged_results, filename, ignore_timestamps=False)
+        file_fullname = os.path.abspath(filename)
+        print(f"\nTranscription results saved to {file_fullname}")
+        return display_text, file_fullname
     else:
         print("No results to process.")
 
-if __name__ == "__main__":
-    main()
+# Example usage:
+# if __name__ == "__main__":
+#     transcript_file_with_diarization(AUDIO_FILE, CHUNK_DURATION, NUM_SPEAKERS)
