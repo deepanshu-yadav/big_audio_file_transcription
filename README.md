@@ -5,7 +5,9 @@
 [![Gradio](https://img.shields.io/badge/Gradio-UI-FF6F00?logo=gradio)](https://gradio.app/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-> **Transcribe Large audio files with automatic speaker diarization and a beautiful web interface.**
+> **Transcribe Large audio files with automatic speaker diarization and a  web interface.**
+
+Uses Nvdia [Parakeet v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) and [Pyannote](https://huggingface.co/pyannote/speaker-diarization-3.1) models for transcription and diarization.
 
 ---
 
@@ -17,7 +19,7 @@
 - **Speaker Recognisation**: Correctly recognizes these speakers across all the chunks.  
 - **Modern Web UI**: Powered by [Gradio](https://gradio.app/)
 - **Downloadable Results**: Get both formatted text and grouped-by-speaker files
-- **CPU Only Infernce **: No need for GPU Uses PyTorch and ONNX for fast inference GPU is optional.
+- **CPU Only Infernce**: No need for GPU Uses PyTorch and ONNX for fast inference GPU is optional.
 
 ---
 
