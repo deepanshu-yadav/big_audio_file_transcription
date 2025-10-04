@@ -174,8 +174,20 @@ class OnnxModel:
         return logit
 
 
-def transcript_file(encoder, decoder, joiner, tokens, wav_path) -> str:
+def format_timestamp(seconds):
+    """Convert seconds to HH:MM:SS.mmm format"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
+
+def transcript_file_with_timestamps(encoder, decoder, joiner, tokens, wav_path) -> tuple:
+    """
+    Returns tuple of (text, timestamped_segments)
+    where timestamped_segments is a list of (start_time, end_time, text) tuples
+    """
+    
     model = OnnxModel(encoder, decoder, joiner)
 
     id2token = dict()
@@ -196,8 +208,10 @@ def transcript_file(encoder, decoder, joiner, tokens, wav_path) -> str:
         )
         sample_rate = 16000
 
+    # Store original audio duration before padding
+    original_audio_duration = audio.shape[0] / 16000
+    
     tail_padding = np.zeros(sample_rate * 2)
-
     audio = np.concatenate([audio, tail_padding])
 
     blank = len(id2token) - 1
@@ -213,19 +227,58 @@ def transcript_file(encoder, decoder, joiner, tokens, wav_path) -> str:
         stddev = features.std(dim=1, keepdims=True) + 1e-5
         features = (features - mean) / stddev
         features = features.numpy()
+    
     print(audio.shape)
     print("features.shape", features.shape)
 
     encoder_out = model.run_encoder(features)
+    
+    # Calculate actual frame duration based on original audio length (excluding padding)
+    # The encoder processes the entire audio including padding, but we want timestamps 
+    # relative to the original audio duration
+    num_encoder_frames = encoder_out.shape[2]
+    
+    # Use original audio duration for more accurate timing
+    frame_duration = original_audio_duration / num_encoder_frames
+    
+    print(f"Original audio duration: {original_audio_duration:.3f} seconds")
+    print(f"Audio with padding: {(audio.shape[0] / 16000):.3f} seconds") 
+    print(f"Number of encoder frames: {num_encoder_frames}")
+    print(f"Frame duration: {frame_duration:.6f} seconds ({frame_duration*1000:.2f} ms per frame)")
+    
+    # Alternative: Calculate based on typical ASR frame rates
+    # Many ASR models use 40ms frames with 10ms shift, so let's also try that
+    typical_frame_shift = 0.01  # 10ms is common
+    print(f"Expected frames for 10ms shift: {int(original_audio_duration / typical_frame_shift)}")
+    
+    # Use the frame duration that makes more sense
+    if num_encoder_frames > 0:
+        calculated_frame_duration = original_audio_duration / num_encoder_frames
+        # If the calculated duration seems reasonable (between 5ms and 100ms per frame), use it
+        if 0.005 <= calculated_frame_duration <= 0.1:
+            frame_duration = calculated_frame_duration
+        else:
+            # Fall back to typical 10ms shift
+            frame_duration = typical_frame_shift
+            print(f"Using fallback frame duration: {frame_duration*1000:.2f} ms per frame")
+    
+    # For tracking timestamps
+    timestamped_tokens = []  # List of (token_idx, frame_time) tuples
+    current_word_start = None
+    current_word_tokens = []
+    
     # encoder_out:[batch_size, dim, T)
     for t in range(encoder_out.shape[2]):
+        frame_time = t * frame_duration
         encoder_out_t = encoder_out[:, :, t : t + 1]
         logits = model.run_joiner(encoder_out_t, decoder_out)
         logits = torch.from_numpy(logits)
         logits = logits.squeeze()
         idx = torch.argmax(logits, dim=-1).item()
+        
         if idx != blank:
             ans.append(idx)
+            timestamped_tokens.append((idx, frame_time))
             state0 = state0_next
             state1 = state1_next
             decoder_out, state0_next, state1_next = model.run_decoder(
@@ -239,23 +292,117 @@ def transcript_file(encoder, decoder, joiner, tokens, wav_path) -> str:
     real_time_factor = elapsed_seconds / audio_duration
 
     ans = ans[1:]  # remove the first blank
-    tokens = [id2token[i] for i in ans]
+    tokens_list = [id2token[i] for i in ans]
     underline = "▁"
-    #  underline = b"\xe2\x96\x81".decode()
-    text = "".join(tokens).replace(underline, " ").strip()
+    text = "".join(tokens_list).replace(underline, " ").strip()
+
+    # Create timestamped segments
+    timestamped_segments = []
+    if timestamped_tokens:
+        current_word = ""
+        word_start_time = timestamped_tokens[0][1]
+        
+        for i, (token_idx, frame_time) in enumerate(timestamped_tokens):
+            token_text = id2token[token_idx]
+            
+            # Check if this token starts a new word (contains underline prefix)
+            if token_text.startswith(underline):
+                # Finish previous word if exists
+                if current_word.strip():
+                    word_end_time = timestamped_tokens[i-1][1] if i > 0 else frame_time
+                    timestamped_segments.append((word_start_time, word_end_time, current_word.strip()))
+                
+                # Start new word
+                current_word = token_text.replace(underline, " ")
+                word_start_time = frame_time
+            else:
+                # Continue current word
+                current_word += token_text
+        
+        # Add the last word
+        if current_word.strip():
+            word_end_time = timestamped_tokens[-1][1]
+            timestamped_segments.append((word_start_time, word_end_time, current_word.strip()))
 
     print(ans)
     print(wav_path)
     print(text)
     print(f"RTF: {real_time_factor}")
-    return text
+    
+    # Print timestamped results
+    print("\n=== TIMESTAMPED TRANSCRIPTION ===")
+    print(f"Total segments: {len(timestamped_segments)}")
+    if timestamped_segments:
+        total_duration = timestamped_segments[-1][1] - timestamped_segments[0][0]
+        coverage_percent = (total_duration / original_audio_duration) * 100
+        print(f"Transcribed duration: {total_duration:.3f} seconds")
+        print(f"Audio coverage: {coverage_percent:.1f}% of {original_audio_duration:.3f}s total")
+        
+        # If coverage is low, it might indicate silence/padding at the end
+        if coverage_percent < 80:
+            print("Note: Low coverage may indicate silence at the end of the audio file")
+    
+    for start_time, end_time, word in timestamped_segments:
+        print(f"[{format_timestamp(start_time)} --> {format_timestamp(end_time)}] {word}")
+    
+    return text, timestamped_segments
 
 
-# ----------------------Example usage ------------------------
-# transcript_file(
-#     encoder=os.path.join("model_components","encoder.int8.onnx"),
-#     decoder=os.path.join("model_components", "decoder.int8.onnx"),
-#     joiner=os.path.join("model_components","joiner.int8.onnx"),
-#     tokens=os.path.join("model_components","tokens.txt"),
-#     wav_path="big_file_part_000.wav",
-# )
+def transcript_file(encoder, decoder, joiner, tokens, wav_path) -> str:
+    """
+    Original function - returns only text for backward compatibility
+    """
+    text, segments = transcript_file_with_timestamps(encoder, decoder, joiner, tokens, wav_path)
+    return text, segments
+
+
+def save_timestamped_transcript(segments, output_file):
+    """
+    Save timestamped transcript to various formats
+    """
+    if output_file.endswith('.srt'):
+        # SRT subtitle format
+        with open(output_file, 'w', encoding='utf-8') as f:
+            for i, (start_time, end_time, text) in enumerate(segments, 1):
+                # Convert to SRT time format (HH:MM:SS,mmm)
+                start_srt = format_timestamp(start_time).replace('.', ',')
+                end_srt = format_timestamp(end_time).replace('.', ',')
+                f.write(f"{i}\n")
+                f.write(f"{start_srt} --> {end_srt}\n")
+                f.write(f"{text}\n\n")
+    
+    elif output_file.endswith('.vtt'):
+        # WebVTT format
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write("WEBVTT\n\n")
+            for start_time, end_time, text in segments:
+                start_vtt = format_timestamp(start_time)
+                end_vtt = format_timestamp(end_time)
+                f.write(f"{start_vtt} --> {end_vtt}\n")
+                f.write(f"{text}\n\n")
+    
+    else:
+        # Plain text with timestamps
+        with open(output_file, 'w', encoding='utf-8') as f:
+            for start_time, end_time, text in segments:
+                f.write(f"[{format_timestamp(start_time)} --> {format_timestamp(end_time)}] {text}\n")
+
+
+# ----------------------Example usage with timestamps ------------------------
+# if __name__ == "__main__":
+#     # Example usage with timestamps
+#     text, segments = transcript_file_with_timestamps(
+#         encoder=os.path.join("model_components","encoder.int8.onnx"),
+#         decoder=os.path.join("model_components", "decoder.int8.onnx"),
+#         joiner=os.path.join("model_components","joiner.int8.onnx"),
+#         tokens=os.path.join("model_components","tokens.txt"),
+#         wav_path="file.wav",
+#     )
+    
+#     # Save timestamped transcript in different formats
+#     save_timestamped_transcript(segments, "transcript.txt")
+#     save_timestamped_transcript(segments, "transcript.srt")
+#     save_timestamped_transcript(segments, "transcript.vtt")
+    
+#     print(f"\nFull text: {text}")
+#     print(f"Generated {len(segments)} timestamped segments")

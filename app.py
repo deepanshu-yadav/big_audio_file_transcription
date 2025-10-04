@@ -1,7 +1,7 @@
 import gradio as gr
 from transcript_big_file import transcript_file_with_diarization  
 
-def transcribe_audio(audio_file, num_speakers, chunk_duration):
+def transcribe_audio(audio_file, num_speakers, chunk_duration, diarization_method):
     """
     Wrapper function for Gradio to handle transcription with diarization.
     
@@ -9,6 +9,7 @@ def transcribe_audio(audio_file, num_speakers, chunk_duration):
         audio_file (str): Path to the uploaded audio file.
         num_speakers (int): Number of tentative speakers.
         chunk_duration (float): Chunk duration in seconds.
+        diarization_method (str): Selected diarization method.
     
     Returns:
         tuple: (transcription_text: str, output_file_path: str)
@@ -16,9 +17,9 @@ def transcribe_audio(audio_file, num_speakers, chunk_duration):
     if audio_file is None:
         return "Please upload an audio file.", None
     
-    # Call the transcription function
+    # Pass the selected diarization method
     transcription_text, output_file_path = transcript_file_with_diarization(
-        audio_file, chunk_duration, num_speakers
+        audio_file, chunk_duration, num_speakers, diarization_method
     )
     
     return transcription_text, output_file_path
@@ -26,7 +27,7 @@ def transcribe_audio(audio_file, num_speakers, chunk_duration):
 # Create the Gradio interface
 with gr.Blocks(title="Audio Transcription with Diarization") as demo:
     gr.Markdown("# Audio Transcription with Speaker Diarization")
-    gr.Markdown("Upload an audio file, specify the number of tentative speakers, and chunk duration to get a transcription.")
+    gr.Markdown("Upload an audio file, specify the number of tentative speakers, chunk duration, and diarization method.")
     
     with gr.Row():
         audio_input = gr.Audio(
@@ -47,6 +48,11 @@ with gr.Blocks(title="Audio Transcription with Diarization") as demo:
             minimum=1.0,
             step=1.0
         )
+        diarization_method = gr.Dropdown(
+            label="Diarization Method",
+            choices=["resemblyzer", "pyannote"],
+            value="resemblyzer"
+        )
     
     transcribe_btn = gr.Button("Transcribe", variant="primary")
     
@@ -63,7 +69,7 @@ with gr.Blocks(title="Audio Transcription with Diarization") as demo:
     # Event handler
     transcribe_btn.click(
         fn=transcribe_audio,
-        inputs=[audio_input, num_speakers, chunk_duration],
+        inputs=[audio_input, num_speakers, chunk_duration, diarization_method],
         outputs=[transcription_output, download_output]
     )
     

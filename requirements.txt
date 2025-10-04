@@ -10,3 +10,4 @@ pyannote.audio
 pyannote.core
 silero-vad==6.0.0
 gradio
+Resemblyzer==0.1.4

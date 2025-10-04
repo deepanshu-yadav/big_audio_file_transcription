@@ -34,8 +34,8 @@ Uses Nvdia [Parakeet v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) and
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/yourrepo.git
-cd yourrepo
+git clone https://github.com/deepanshu-yadav/big_audio_file_transcription.git
+cd big_audio_file_transcription
 ```
 
 ---
@@ -43,6 +43,8 @@ cd yourrepo
 ### 2. Download Pretrained Models
 
 #### **Diarization Models**
+
+If you choose pyannote models for diarization you need to download the following files. Otherwise if you choose resemblyser then no need.
 
 - **Segmentation Model**  
   Download from [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0/blob/main/pytorch_model.bin)  
